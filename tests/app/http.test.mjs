@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createApp } from '../../src/web/http.mts';
+
+test('RF-1/RF-3/RF-5/RF-6/RF-7: HTTP lifecycle and Spanish dashboard work without external calls', async t => {
+  const app = createApp({ database: ':memory:', demo: true, background: false });
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening');
+  t.after(() => app.close());
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const call = async (path, body) => fetch(base + path, body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const home = await call('/');
+  assert.equal(home.status, 200);
+  assert.match(await home.text(), /lang="es"/);
+  assert.equal((await call('/api/state')).status, 200);
+  assert.equal((await call('/api/tracking', { url: 'https://evil.test/a', color: 'Negro', sizeCm: '27' })).status, 400);
+  const forbidden = await fetch(base + '/api/demo/seed', { method: 'POST', headers: { origin: 'https://evil.test', 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(forbidden.status, 403);
+  assert.equal((await call('/api/demo/seed', {})).status, 200);
+  await app.service.drain();
+  const state = await (await call('/api/state')).json();
+  assert.equal(state.tracking.length, 3);
+  assert.equal(state.offers.length, 2);
+  assert.equal(state.exchange.rate, '10');
+  const id = state.offers[0].id;
+  assert.equal((await (await call(`/api/tracking/${id}/history`)).json()).history.length, 1);
+  assert.equal((await call(`/api/tracking/${id}/refresh`, {})).status, 202);
+  await app.service.drain();
+  const missing = await call('/api/tracking/9999/history');
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).message, 'No se encontró el seguimiento.');
+});
